@@ -1,0 +1,335 @@
+#!/bin/sh
+#
+
+#
+# systemd-service - Install systemd service; see 'systemd-service help'.
+#
+
+
+#
+# Define permanent options/defaults here.
+#
+
+# The service name.  Default: directory name.
+NAME=
+
+# The service description.
+DESCRIPTION=
+
+# User running the service. Default: current user.
+USER=
+
+# Command to run after the service was stopped.
+POST_STOP=
+
+# Command to execute.  Default: 'start.sh'
+CMD=
+
+# Set to 'yes' if the service should be restarted by systemd
+# when it exists.
+RESTART=
+
+
+
+#
+# 2021-11-19: Version 1.0.0.
+#
+
+while getopts c:d:fn:p:r:u: OPT; do
+    case "$OPT" in
+      c)    CMD="$OPTARG";;
+      d)    DESCRIPTION="$OPTARG";;
+      f)    force=yes;;
+      n)    NAME="$OPTARG";;
+      p)    POST_STOP="$OPTARG";;
+      r)    RESTART="$OPTARG";;
+      u)    USER="$OPTARG";;
+      \?)   exit 1
+    esac
+done
+shift $((OPTIND - 1))
+
+
+#
+# Go to the script's directory.
+#
+
+dir=`dirname $0`
+program=`basename $0 .sh`
+version="1.0.1"
+
+cd $dir  ||  exit 1
+export DIR=`basename $PWD`
+
+
+#
+# Provide default values.
+#
+
+NAME=${NAME:-`basename $PWD`}
+USER=${USER:-$(whoami)}
+DESCRIPTION=${DESCRIPTION:-$NAME service}
+RESTART=${RESTART:-yes}
+CMD=${CMD:-start.sh}
+
+
+if [ "$RESTART" != "yes"  -a  "$RESTART" != "no" ]; then
+    error "bad restart value: $RESTART"
+fi
+
+
+#
+# Make sure $CMD has a full path.
+#
+
+if [ "${CMD%%/*}" != "" ]; then
+	CMD="$PWD/$CMD"
+fi
+
+
+#
+# UNIT_PATH is the system file we are going to write or delete.
+#
+
+UNIT_NAME=${NAME}.service
+UNIT_PATH=/etc/systemd/system/${UNIT_NAME}
+
+
+
+error() {
+	echo $program: $@ >&2
+	exit 1
+	}
+
+check_unit() {
+	if [ ! -f "$UNIT_PATH" ]; then
+		error "unit $UNIT_NAME not found."
+	fi
+	}
+
+check_root() {
+	if [ `id -u` != "0" ]; then
+		error "root permissions required."
+	fi
+	}
+
+make_unit_file() {
+	esp="ExecStopPost=$POST_STOP"
+	if [ "$POST_STOP" = "" ]; then
+		esp="# $esp"
+	fi
+
+	cat <<-EOF
+		[Unit]
+		# unit: ${UNIT_NAME}  ${UNIT_PATH}
+		# generated: ${program}/${version} $(date +"%Y-%m-%d %H:%M")
+		Description=${DESCRIPTION}
+		After=network-online.target
+
+		[Service]
+		Type=simple
+		ExecStart=$CMD
+		${esp}
+		User=${USER}
+		Restart=${RESTART}
+
+		[Install]
+		WantedBy=multi-user.target
+		EOF
+	}
+
+create_start_script() {
+	cat <<'EOF' | sed 's/^\t\t//'
+		#!/bin/sh
+		#
+
+		dir=`dirname $0`
+		cd $dir  ||  exit 1
+
+		export BASE="$PWD"
+		PATH="$BASE:$PATH"
+
+		export HOME=/home/$USER
+
+
+		# Set a unique key for this run.
+		export SESSION_KEY=`date +'%Y%m%d-%H%M%S'`
+
+
+		# Redirect all script/program output into
+		# a logfile for later inspection (and removal).
+		progname=`basename $0 .sh`
+		if ! tty -s; then
+		    LOG=$progname-"$SESSION_KEY".log
+		    exec >$LOG 2>&1
+		fi
+
+
+		# Keep all logfiles from today plus 6 older logs and
+		# remove the others.  "Today" is difficult if the raspi
+		# runs without network but you should have access to the
+		# relevant log in case off an issue.  Even with network
+		# date and time may be not correct because setting time
+		# happens usually after the system startup.
+		LIST=`ls -1r $progname-*.log |
+			awk '/./ {
+				split($0, x, "-");
+				if (NR == 1)
+					today = x[2];
+				else if (x[2] == today)
+					;
+				else if (n < 6)
+					n++;
+				else
+					print $0
+				}'`
+		if [ "$LIST" != "" ]; then
+		    rm $LIST
+		fi
+
+
+		{ date; pwd; whoami;
+		  echo;
+		  env | sort;
+		  echo; }
+		  
+
+		# Execute the real project script.
+EOF
+
+	# Finish with real or no command line.
+	if [ "$#" = "0" ]; then
+	    echo "echo no command configured."
+	else
+	    echo "exec $@"
+	fi
+	}
+
+
+print_help() {
+	cat <<-EOF
+	usage: $program [<options>] op
+
+	$program creates, installs and enables a systemd service unit
+	file to run a service on system startup.
+
+	Usage:
+	
+	  - Copy $program to the project's directory.
+	  - Run '$program init' to create a wrapper shell script that
+	    launches your project service.  The script's default name is
+	    'start.sh', which can be changed with the -c option.  Edit the
+	    script's end to start your project.  Make other modifications
+	    as you like.
+	  - '$program show' prints the unit file $program would
+	    install.  Use command line options below for modifications.
+	  - To install the service run 'sudo $program install' with all
+	    required options.
+
+	Options:
+
+	  -c <command>		set the service command line; the default
+	  			is 'start.sh'.
+	  -d <text>		define the service's description.
+	  -f			overwrite existing files.
+	  -n <name>		set the service name; the directory name
+	  			is used as default.
+	  -p <post-stop-cmd>	set the service's command to run after the
+	  			service is stopped by systemd.
+	  -r yes|no		make the service restartable or not.
+	  -u <user>		set the service's user; default is 'pi'.
+
+	Defaults for the unit file options can be set at the beginning
+	of ${program}.
+
+	Operations:
+
+	  init		creates a shell script in the current directory
+	  		that can be used to start the project's service.
+
+	  install	creates a unit file in /etc/systemd/system,
+	  		installs and enables it.
+
+	  show		prints the unit file $program would install.
+
+	  uninstall	disables the unit, stops it and removes the
+	  		unit file from /etc/systemd/system.
+
+	Superuser permissions are required for install and uninstall operation.
+
+	EOF
+	}
+
+if [ "$#" = "0" ]; then
+    op="help"
+else
+    op="$1"
+    shift 1
+fi
+
+if [ "$op" != "init" -a "$*" != "" ]; then
+    error "extra arguments on command line: $@"
+fi
+
+case "$op" in
+    help)
+	print_help
+	;;
+
+    enable)
+	check_unit
+	check_root
+	systemctl enable "$UNIT_NAME"
+	;;
+
+    disable)
+	check_unit
+	check_root
+	systemctl stop "$UNIT_NAME"
+	systemctl disable "$UNIT_NAME"
+	;;
+
+    init)
+	script=${CMD%% *}
+	if [ -f "$script" -a "$force" != "yes" ]; then
+		error "script exists: $script; use -f to overwrite"
+	fi
+	create_start_script "$@" >"$script"
+	chmod +x "$script"
+	ls -l "$script"
+	echo "Start script is $script."
+	;;
+
+    install)
+	if [ -f "$UNIT_PATH" -a "$force" != "yes" ]; then
+		error "file exists: $UNIT_PATH; use -f to overwrite"
+	fi
+	check_root
+	make_unit_file >"$UNIT_PATH"
+	systemctl daemon-reload
+	systemctl enable "$UNIT_NAME"
+	echo "Service $UNIT_NAME installed and enabled."
+	;;
+
+    show)
+	make_unit_file
+	;;
+
+    uninstall)
+	check_unit
+	check_root
+	systemctl disable "$UNIT_NAME"
+	systemctl stop "$UNIT_NAME"
+	rm -f "$UNIT_PATH"
+	systemctl daemon-reload
+	echo "Service $UNIT_NAME deleted."
+	;;
+
+    *)
+	error "unknown operation: $op"
+	;;
+
+esac
+
+exit 0
+
