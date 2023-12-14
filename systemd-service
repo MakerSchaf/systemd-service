@@ -69,13 +69,9 @@ export DIR=`basename $PWD`
 NAME=${NAME:-`basename $PWD`}
 USER=${USER:-$(whoami)}
 DESCRIPTION=${DESCRIPTION:-$NAME service}
-RESTART=${RESTART:-yes}
+RESTART=${RESTART:-always}
 CMD=${CMD:-start.sh}
 
-
-if [ "$RESTART" != "yes"  -a  "$RESTART" != "no" ]; then
-    error "bad restart value: $RESTART"
-fi
 
 
 #
